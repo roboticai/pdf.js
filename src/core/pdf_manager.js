@@ -13,40 +13,39 @@
  * limitations under the License.
  */
 
-'use strict';
-
-(function (root, factory) {
-  if (typeof define === 'function' && define.amd) {
-    define('pdfjs/core/pdf_manager', ['exports', 'pdfjs/shared/util',
-      'pdfjs/core/stream', 'pdfjs/core/chunked_stream', 'pdfjs/core/document'],
-      factory);
-  } else if (typeof exports !== 'undefined') {
-    factory(exports, require('../shared/util.js'), require('./stream.js'),
-      require('./chunked_stream.js'), require('./document.js'));
-  } else {
-    factory((root.pdfjsCorePdfManager = {}), root.pdfjsSharedUtil,
-      root.pdfjsCoreStream, root.pdfjsCoreChunkedStream,
-      root.pdfjsCoreDocument);
-  }
-}(this, function (exports, sharedUtil, coreStream, coreChunkedStream,
-                  coreDocument) {
-
-var NotImplementedException = sharedUtil.NotImplementedException;
-var MissingDataException = sharedUtil.MissingDataException;
-var createPromiseCapability = sharedUtil.createPromiseCapability;
-var Util = sharedUtil.Util;
-var Stream = coreStream.Stream;
-var ChunkedStreamManager = coreChunkedStream.ChunkedStreamManager;
-var PDFDocument = coreDocument.PDFDocument;
+import {
+  createPromiseCapability, createValidAbsoluteUrl, MissingDataException,
+  NotImplementedException, shadow, unreachable, Util, warn
+} from '../shared/util';
+import { ChunkedStreamManager } from './chunked_stream';
+import { PDFDocument } from './document';
+import { Stream } from './stream';
 
 var BasePdfManager = (function BasePdfManagerClosure() {
   function BasePdfManager() {
-    throw new Error('Cannot initialize BaseManagerManager');
+    unreachable('Cannot initialize BaseManagerManager');
   }
 
   BasePdfManager.prototype = {
     get docId() {
       return this._docId;
+    },
+
+    get password() {
+      return this._password;
+    },
+
+    get docBaseUrl() {
+      var docBaseUrl = null;
+      if (this._docBaseUrl) {
+        var absoluteUrl = createValidAbsoluteUrl(this._docBaseUrl);
+        if (absoluteUrl) {
+          docBaseUrl = absoluteUrl.href;
+        } else {
+          warn('Invalid absolute docBaseUrl: "' + this._docBaseUrl + '".');
+        }
+      }
+      return shadow(this, 'docBaseUrl', docBaseUrl);
     },
 
     onLoadedStream: function BasePdfManager_onLoadedStream() {
@@ -90,30 +89,26 @@ var BasePdfManager = (function BasePdfManagerClosure() {
     },
 
     updatePassword: function BasePdfManager_updatePassword(password) {
-      this.pdfDocument.xref.password = this.password = password;
-      if (this._passwordChangedCapability) {
-        this._passwordChangedCapability.resolve();
-      }
-    },
-
-    passwordChanged: function BasePdfManager_passwordChanged() {
-      this._passwordChangedCapability = createPromiseCapability();
-      return this._passwordChangedCapability.promise;
+      this._password = password;
     },
 
     terminate: function BasePdfManager_terminate() {
       return new NotImplementedException();
-    }
+    },
   };
 
   return BasePdfManager;
 })();
 
 var LocalPdfManager = (function LocalPdfManagerClosure() {
-  function LocalPdfManager(docId, data, password) {
+  function LocalPdfManager(docId, data, password, evaluatorOptions,
+                           docBaseUrl) {
     this._docId = docId;
+    this._password = password;
+    this._docBaseUrl = docBaseUrl;
+    this.evaluatorOptions = evaluatorOptions;
     var stream = new Stream(data);
-    this.pdfDocument = new PDFDocument(this, stream, password);
+    this.pdfDocument = new PDFDocument(this, stream);
     this._loadedStreamCapability = createPromiseCapability();
     this._loadedStreamCapability.resolve(stream);
   }
@@ -150,27 +145,30 @@ var LocalPdfManager = (function LocalPdfManagerClosure() {
 
     terminate: function LocalPdfManager_terminate() {
       return;
-    }
+    },
   });
 
   return LocalPdfManager;
 })();
 
 var NetworkPdfManager = (function NetworkPdfManagerClosure() {
-  function NetworkPdfManager(docId, pdfNetworkStream, args) {
+  function NetworkPdfManager(docId, pdfNetworkStream, args, evaluatorOptions,
+                             docBaseUrl) {
     this._docId = docId;
+    this._password = args.password;
+    this._docBaseUrl = docBaseUrl;
     this.msgHandler = args.msgHandler;
+    this.evaluatorOptions = evaluatorOptions;
 
     var params = {
       msgHandler: args.msgHandler,
       url: args.url,
       length: args.length,
       disableAutoFetch: args.disableAutoFetch,
-      rangeChunkSize: args.rangeChunkSize
+      rangeChunkSize: args.rangeChunkSize,
     };
     this.streamManager = new ChunkedStreamManager(pdfNetworkStream, params);
-    this.pdfDocument = new PDFDocument(this, this.streamManager.getStream(),
-                                       args.password);
+    this.pdfDocument = new PDFDocument(this, this.streamManager.getStream());
   }
 
   Util.inherit(NetworkPdfManager, BasePdfManager, {
@@ -188,7 +186,7 @@ var NetworkPdfManager = (function NetworkPdfManagerClosure() {
               result = value;
             }
             resolve(result);
-          } catch(e) {
+          } catch (e) {
             if (!(e instanceof MissingDataException)) {
               reject(e);
               return;
@@ -212,7 +210,7 @@ var NetworkPdfManager = (function NetworkPdfManagerClosure() {
 
     sendProgressiveData:
         function NetworkPdfManager_sendProgressiveData(chunk) {
-      this.streamManager.onReceiveData({ chunk: chunk });
+      this.streamManager.onReceiveData({ chunk, });
     },
 
     onLoadedStream: function NetworkPdfManager_onLoadedStream() {
@@ -221,12 +219,13 @@ var NetworkPdfManager = (function NetworkPdfManagerClosure() {
 
     terminate: function NetworkPdfManager_terminate() {
       this.streamManager.abort();
-    }
+    },
   });
 
   return NetworkPdfManager;
 })();
 
-exports.LocalPdfManager = LocalPdfManager;
-exports.NetworkPdfManager = NetworkPdfManager;
-}));
+export {
+  LocalPdfManager,
+  NetworkPdfManager,
+};

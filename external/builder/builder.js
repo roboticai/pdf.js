@@ -1,6 +1,3 @@
-/* jshint node:true */
-/* globals cp, ls, test */
-
 'use strict';
 
 var fs = require('fs'),
@@ -56,7 +53,7 @@ function preprocess(inFilename, outFilename, defines) {
       throw new Error('No JavaScript expression given at ' + loc());
     }
     try {
-      return vm.runInNewContext(code, defines, {displayErrors: false});
+      return vm.runInNewContext(code, defines, { displayErrors: false, });
     } catch (e) {
       throw new Error('Could not evaluate "' + code + '" at ' + loc() + '\n' +
                       e.name + ': ' + e.message);
@@ -66,7 +63,14 @@ function preprocess(inFilename, outFilename, defines) {
     var realPath = fs.realpathSync(inFilename);
     var dir = path.dirname(realPath);
     try {
-      preprocess(path.join(dir, file), writeLine, defines);
+      var fullpath;
+      if (file.indexOf('$ROOT/') === 0) {
+        fullpath = path.join(__dirname, '../..',
+          file.substring('$ROOT/'.length));
+      } else {
+        fullpath = path.join(dir, file);
+      }
+      preprocess(fullpath, writeLine, defines);
     } catch (e) {
       if (e.code === 'ENOENT') {
         throw new Error('Failed to include "' + file + '" at ' + loc());
@@ -93,16 +97,15 @@ function preprocess(inFilename, outFilename, defines) {
   var STATE_ELSE_TRUE = 2;
   // inside if, condition true (process lines until #else or #endif)
   var STATE_IF_TRUE = 3;
-  // inside else, #if was true, so #else is false (ignore lines until #endif)
+  // inside else or elif, #if/#elif was true, so following #else or #elif is
+  // false (ignore lines until #endif)
   var STATE_ELSE_FALSE = 4;
 
   var line;
   var state = STATE_NONE;
   var stack = [];
-  var control =
-  /* jshint -W101 */
+  var control = // eslint-disable-next-line max-len
     /^(?:\/\/|<!--)\s*#(if|elif|else|endif|expand|include|error)\b(?:\s+(.*?)(?:-->)?$)?/;
-  /* jshint +W101 */
   var lineNumber = 0;
   var loc = function() {
     return fs.realpathSync(inFilename) + ':' + lineNumber;
@@ -117,18 +120,18 @@ function preprocess(inFilename, outFilename, defines) {
           state = evaluateCondition(m[2]) ? STATE_IF_TRUE : STATE_IF_FALSE;
           break;
         case 'elif':
-          if (state === STATE_IF_TRUE) {
+          if (state === STATE_IF_TRUE || state === STATE_ELSE_FALSE) {
             state = STATE_ELSE_FALSE;
           } else if (state === STATE_IF_FALSE) {
             state = evaluateCondition(m[2]) ? STATE_IF_TRUE : STATE_IF_FALSE;
-          } else if (state === STATE_ELSE_TRUE || state === STATE_ELSE_FALSE) {
+          } else if (state === STATE_ELSE_TRUE) {
             throw new Error('Found #elif after #else at ' + loc());
           } else {
             throw new Error('Found #elif without matching #if at ' + loc());
           }
           break;
         case 'else':
-          if (state === STATE_IF_TRUE) {
+          if (state === STATE_IF_TRUE || state === STATE_ELSE_FALSE) {
             state = STATE_ELSE_FALSE;
           } else if (state === STATE_IF_FALSE) {
             state = STATE_ELSE_TRUE;
@@ -261,47 +264,6 @@ function preprocessCSS(mode, source, destination) {
   fs.writeFileSync(destination, content);
 }
 exports.preprocessCSS = preprocessCSS;
-
-/**
- * Simplifies common build steps.
- * @param {object} setup
- *        .defines defines for preprocessors
- *        .copy array of arrays of source and destination pairs of files to copy
- *        .preprocess array of arrays of source and destination pairs of files
- *                    run through preprocessor.
- */
-function build(setup) {
-  var defines = setup.defines;
-
-  setup.copy.forEach(function(option) {
-    var source = option[0];
-    var destination = option[1];
-    cp('-R', source, destination);
-  });
-
-  setup.preprocess.forEach(function(option) {
-    var sources = option[0];
-    var destination = option[1];
-
-    sources = ls('-R', sources);
-    sources.forEach(function(source) {
-      // ??? Warn if the source is wildcard and dest is file?
-      var destWithFolder = destination;
-      if (test('-d', destination)) {
-        destWithFolder += '/' + path.basename(source);
-      }
-      preprocess(source, destWithFolder, defines);
-    });
-  });
-
-  (setup.preprocessCSS || []).forEach(function(option) {
-    var mode = option[0];
-    var source = option[1];
-    var destination = option[2];
-    preprocessCSS(mode, source, destination);
-  });
-}
-exports.build = build;
 
 /**
  * Merge two defines arrays. Values in the second param will override values in

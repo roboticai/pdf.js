@@ -12,34 +12,44 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/*jshint globalstrict: false */
-/* globals PDFJS, PDFViewer, PDFPageView, TextLayerBuilder, PDFLinkService,
-           DefaultTextLayerFactory, AnnotationLayerBuilder, PDFHistory,
-           DefaultAnnotationLayerFactory, DownloadManager, ProgressBar */
 
-// Initializing PDFJS global object (if still undefined)
-if (typeof PDFJS === 'undefined') {
-  (typeof window !== 'undefined' ? window : this).PDFJS = {};
-}
+import {
+  AnnotationLayerBuilder, DefaultAnnotationLayerFactory
+} from './annotation_layer_builder.js';
+import {
+  DefaultTextLayerFactory, TextLayerBuilder
+} from './text_layer_builder.js';
+import { EventBus, NullL10n, ProgressBar } from './ui_utils.js';
+import { PDFLinkService, SimpleLinkService } from './pdf_link_service.js';
+import { DownloadManager } from './download_manager.js';
+import { GenericL10n } from './genericl10n.js';
+import { PDFFindController } from './pdf_find_controller.js';
+import { PDFHistory } from './pdf_history.js';
+import pdfjsLib from './pdfjs.js';
+import { PDFPageView } from './pdf_page_view.js';
+import { PDFSinglePageViewer } from './pdf_single_page_viewer';
+import { PDFViewer } from './pdf_viewer.js';
 
-(function pdfViewerWrapper() {
-  'use strict';
+let { PDFJS, } = pdfjsLib;
 
-//#include ui_utils.js
-//#include pdf_link_service.js
-//#include pdf_viewer.js
-//#include pdf_history.js
-//#include download_manager.js
+PDFJS.PDFViewer = PDFViewer;
+PDFJS.PDFSinglePageViewer = PDFSinglePageViewer;
+PDFJS.PDFPageView = PDFPageView;
+PDFJS.PDFLinkService = PDFLinkService;
+PDFJS.SimpleLinkService = SimpleLinkService;
+PDFJS.TextLayerBuilder = TextLayerBuilder;
+PDFJS.DefaultTextLayerFactory = DefaultTextLayerFactory;
+PDFJS.AnnotationLayerBuilder = AnnotationLayerBuilder;
+PDFJS.DefaultAnnotationLayerFactory = DefaultAnnotationLayerFactory;
+PDFJS.PDFHistory = PDFHistory;
+PDFJS.PDFFindController = PDFFindController;
+PDFJS.EventBus = EventBus;
 
-  PDFJS.PDFViewer = PDFViewer;
-  PDFJS.PDFPageView = PDFPageView;
-  PDFJS.PDFLinkService = PDFLinkService;
-  PDFJS.TextLayerBuilder = TextLayerBuilder;
-  PDFJS.DefaultTextLayerFactory = DefaultTextLayerFactory;
-  PDFJS.AnnotationLayerBuilder = AnnotationLayerBuilder;
-  PDFJS.DefaultAnnotationLayerFactory = DefaultAnnotationLayerFactory;
-  PDFJS.PDFHistory = PDFHistory;
+PDFJS.DownloadManager = DownloadManager;
+PDFJS.ProgressBar = ProgressBar;
+PDFJS.GenericL10n = GenericL10n;
+PDFJS.NullL10n = NullL10n;
 
-  PDFJS.DownloadManager = DownloadManager;
-  PDFJS.ProgressBar = ProgressBar;
-}).call((typeof window === 'undefined') ? this : window);
+export {
+  PDFJS,
+};

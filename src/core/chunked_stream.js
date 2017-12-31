@@ -12,28 +12,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals NetworkManager */
 
-'use strict';
-
-(function (root, factory) {
-  if (typeof define === 'function' && define.amd) {
-    define('pdfjs/core/chunked_stream', ['exports', 'pdfjs/shared/util'],
-      factory);
-  } else if (typeof exports !== 'undefined') {
-    factory(exports, require('../shared/util.js'));
-  } else {
-    factory((root.pdfjsCoreChunkedStream = {}), root.pdfjsSharedUtil);
-  }
-}(this, function (exports, sharedUtil) {
-
-var MissingDataException = sharedUtil.MissingDataException;
-var arrayByteLength = sharedUtil.arrayByteLength;
-var arraysToBytes = sharedUtil.arraysToBytes;
-var assert = sharedUtil.assert;
-var createPromiseCapability = sharedUtil.createPromiseCapability;
-var isInt = sharedUtil.isInt;
-var isEmptyObj = sharedUtil.isEmptyObj;
+import {
+  arrayByteLength, arraysToBytes, createPromiseCapability, isEmptyObj,
+  MissingDataException
+} from '../shared/util';
 
 var ChunkedStream = (function ChunkedStreamClosure() {
   function ChunkedStream(length, chunkSize, manager) {
@@ -75,12 +58,15 @@ var ChunkedStream = (function ChunkedStreamClosure() {
     onReceiveData: function ChunkedStream_onReceiveData(begin, chunk) {
       var end = begin + chunk.byteLength;
 
-      assert(begin % this.chunkSize === 0, 'Bad begin offset: ' + begin);
+      if (begin % this.chunkSize !== 0) {
+        throw new Error(`Bad begin offset: ${begin}`);
+      }
       // Using this.length is inaccurate here since this.start can be moved
       // See ChunkedStream.moveStart()
       var length = this.bytes.length;
-      assert(end % this.chunkSize === 0 || end === length,
-             'Bad end offset: ' + end);
+      if (end % this.chunkSize !== 0 && end !== length) {
+        throw new Error(`Bad end offset: ${end}`);
+      }
 
       this.bytes.set(new Uint8Array(chunk), begin);
       var chunkSize = this.chunkSize;
@@ -272,8 +258,6 @@ var ChunkedStream = (function ChunkedStreamClosure() {
       subStream.dict = dict;
       return subStream;
     },
-
-    isStream: true
   };
 
   return ChunkedStream;
@@ -323,7 +307,7 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
               chunks.push(data);
               loaded += arrayByteLength(data);
               if (rangeReader.isStreamingSupported) {
-                manager.onProgress({loaded: loaded});
+                manager.onProgress({ loaded, });
               }
               rangeReader.read().then(readChunk, reject);
               return;
@@ -337,12 +321,12 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
         };
         rangeReader.read().then(readChunk, reject);
       });
-      promise.then(function (data) {
+      promise.then((data) => {
         if (this.aborted) {
           return; // ignoring any data after abort
         }
-        this.onReceiveData({chunk: data, begin: begin});
-      }.bind(this));
+        this.onReceiveData({ chunk: data, begin, });
+      });
       // TODO check errors
     },
 
@@ -433,7 +417,9 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
         }
       }
 
-      chunksToRequest.sort(function(a, b) { return a - b; });
+      chunksToRequest.sort(function(a, b) {
+        return a - b;
+      });
       return this._requestChunks(chunksToRequest);
     },
 
@@ -451,13 +437,13 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
         }
 
         if (prevChunk >= 0 && prevChunk + 1 !== chunk) {
-          groupedChunks.push({ beginChunk: beginChunk,
-                               endChunk: prevChunk + 1 });
+          groupedChunks.push({ beginChunk,
+                               endChunk: prevChunk + 1, });
           beginChunk = chunk;
         }
         if (i + 1 === chunks.length) {
-          groupedChunks.push({ beginChunk: beginChunk,
-                               endChunk: chunk + 1 });
+          groupedChunks.push({ beginChunk,
+                               endChunk: chunk + 1, });
         }
 
         prevChunk = chunk;
@@ -470,7 +456,7 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
                          args.loaded);
       this.msgHandler.send('DocProgress', {
         loaded: bytesLoaded,
-        total: this.length
+        total: this.length,
       });
     },
 
@@ -532,7 +518,7 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
         } else {
           nextEmptyChunk = this.stream.nextEmptyChunk(endChunk);
         }
-        if (isInt(nextEmptyChunk)) {
+        if (Number.isInteger(nextEmptyChunk)) {
           this._requestChunks([nextEmptyChunk]);
         }
       }
@@ -546,7 +532,7 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
 
       this.msgHandler.send('DocProgress', {
         loaded: this.stream.numChunksLoaded * this.chunkSize,
-        total: this.length
+        total: this.length,
       });
     },
 
@@ -569,16 +555,17 @@ var ChunkedStreamManager = (function ChunkedStreamManagerClosure() {
       if (this.pdfNetworkStream) {
         this.pdfNetworkStream.cancelAllRequests('abort');
       }
-      for(var requestId in this.promisesByRequest) {
+      for (var requestId in this.promisesByRequest) {
         var capability = this.promisesByRequest[requestId];
         capability.reject(new Error('Request was aborted'));
       }
-    }
+    },
   };
 
   return ChunkedStreamManager;
 })();
 
-exports.ChunkedStream = ChunkedStream;
-exports.ChunkedStreamManager = ChunkedStreamManager;
-}));
+export {
+  ChunkedStream,
+  ChunkedStreamManager,
+};

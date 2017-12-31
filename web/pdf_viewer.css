@@ -37,9 +37,22 @@
   border: none;
 }
 
+.pdfViewer.singlePageView {
+  display: inline-block;
+}
+
+.pdfViewer.singlePageView .page {
+  margin: 0;
+  border: none;
+}
+
 .pdfViewer .page canvas {
   margin: 0;
   display: block;
+}
+
+.pdfViewer .page canvas[hidden] {
+  display: none;
 }
 
 .pdfViewer .page .loadingIcon {

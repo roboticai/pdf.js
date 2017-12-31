@@ -13,41 +13,50 @@
  * limitations under the License.
  */
 
-'use strict';
-
-(function (root, factory) {
-  if (typeof define === 'function' && define.amd) {
-    define('pdfjs/core/colorspace', ['exports', 'pdfjs/shared/util',
-      'pdfjs/core/primitives', 'pdfjs/core/function', 'pdfjs/core/stream'],
-      factory);
-  } else if (typeof exports !== 'undefined') {
-    factory(exports, require('../shared/util.js'), require('./primitives.js'),
-      require('./function.js'), require('./stream.js'));
-  } else {
-    factory((root.pdfjsCoreColorSpace = {}), root.pdfjsSharedUtil,
-      root.pdfjsCorePrimitives, root.pdfjsCoreFunction, root.pdfjsCoreStream);
-  }
-}(this, function (exports, sharedUtil, corePrimitives, coreFunction,
-                  coreStream) {
-
-var error = sharedUtil.error;
-var info = sharedUtil.info;
-var isArray = sharedUtil.isArray;
-var isString = sharedUtil.isString;
-var shadow = sharedUtil.shadow;
-var warn = sharedUtil.warn;
-var isDict = corePrimitives.isDict;
-var isName = corePrimitives.isName;
-var isStream = corePrimitives.isStream;
-var PDFFunction = coreFunction.PDFFunction;
-
-var coreImage; // see _setCoreImage below
-var PDFImage; // = coreImage.PDFImage;
+import {
+  FormatError, info, isString, shadow, unreachable, warn
+} from '../shared/util';
+import { isDict, isName, isStream } from './primitives';
 
 var ColorSpace = (function ColorSpaceClosure() {
+  /**
+   * Resizes an RGB image with 3 components.
+   * @param {TypedArray} src - The source buffer.
+   * @param {Number} bpc - Number of bits per component.
+   * @param {Number} w1 - Original width.
+   * @param {Number} h1 - Original height.
+   * @param {Number} w2 - New width.
+   * @param {Number} h2 - New height.
+   * @param {Number} alpha01 - Size reserved for the alpha channel.
+   * @param {TypedArray} dest - The destination buffer.
+   */
+  function resizeRgbImage(src, bpc, w1, h1, w2, h2, alpha01, dest) {
+    var COMPONENTS = 3;
+    alpha01 = alpha01 !== 1 ? 0 : alpha01;
+    var xRatio = w1 / w2;
+    var yRatio = h1 / h2;
+    var i, j, py, newIndex = 0, oldIndex;
+    var xScaled = new Uint16Array(w2);
+    var w1Scanline = w1 * COMPONENTS;
+
+    for (i = 0; i < w2; i++) {
+      xScaled[i] = Math.floor(i * xRatio) * COMPONENTS;
+    }
+    for (i = 0; i < h2; i++) {
+      py = Math.floor(i * yRatio) * w1Scanline;
+      for (j = 0; j < w2; j++) {
+        oldIndex = py + xScaled[j];
+        dest[newIndex++] = src[oldIndex++];
+        dest[newIndex++] = src[oldIndex++];
+        dest[newIndex++] = src[oldIndex++];
+        newIndex += alpha01;
+      }
+    }
+  }
+
   // Constructor should define this.numComps, this.defaultColor, this.name
   function ColorSpace() {
-    error('should not call ColorSpace constructor');
+    unreachable('should not call ColorSpace constructor');
   }
 
   ColorSpace.prototype = {
@@ -67,7 +76,7 @@ var ColorSpace = (function ColorSpaceClosure() {
      */
     getRgbItem: function ColorSpace_getRgbItem(src, srcOffset,
                                                dest, destOffset) {
-      error('Should not call ColorSpace.getRgbItem');
+      unreachable('Should not call ColorSpace.getRgbItem');
     },
     /**
      * Converts the specified number of the color values to the RGB colors.
@@ -81,7 +90,7 @@ var ColorSpace = (function ColorSpaceClosure() {
     getRgbBuffer: function ColorSpace_getRgbBuffer(src, srcOffset, count,
                                                    dest, destOffset, bits,
                                                    alpha01) {
-      error('Should not call ColorSpace.getRgbBuffer');
+      unreachable('Should not call ColorSpace.getRgbBuffer');
     },
     /**
      * Determines the number of bytes required to store the result of the
@@ -90,7 +99,7 @@ var ColorSpace = (function ColorSpaceClosure() {
      */
     getOutputLength: function ColorSpace_getOutputLength(inputLength,
                                                          alpha01) {
-      error('Should not call ColorSpace.getOutputLength');
+      unreachable('Should not call ColorSpace.getOutputLength');
     },
     /**
      * Returns true if source data will be equal the result/output data.
@@ -170,8 +179,8 @@ var ColorSpace = (function ColorSpaceClosure() {
 
       if (rgbBuf) {
         if (needsResizing) {
-          PDFImage.resize(rgbBuf, bpc, 3, originalWidth, originalHeight, width,
-                          height, dest, alpha01);
+          resizeRgbImage(rgbBuf, bpc, originalWidth, originalHeight,
+                         width, height, alpha01, dest);
         } else {
           rgbPos = 0;
           destPos = 0;
@@ -189,19 +198,16 @@ var ColorSpace = (function ColorSpaceClosure() {
      * This should be true for all colorspaces except for lab color spaces
      * which are [0,100], [-128, 127], [-128, 127].
      */
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
 
-  ColorSpace.parse = function ColorSpace_parse(cs, xref, res) {
-    var IR = ColorSpace.parseToIR(cs, xref, res);
-    if (IR instanceof AlternateCS) {
-      return IR;
-    }
-    return ColorSpace.fromIR(IR);
+  ColorSpace.parse = function(cs, xref, res, pdfFunctionFactory) {
+    let IR = ColorSpace.parseToIR(cs, xref, res, pdfFunctionFactory);
+    return ColorSpace.fromIR(IR, pdfFunctionFactory);
   };
 
-  ColorSpace.fromIR = function ColorSpace_fromIR(IR) {
-    var name = isArray(IR) ? IR[0] : IR;
+  ColorSpace.fromIR = function(IR, pdfFunctionFactory) {
+    var name = Array.isArray(IR) ? IR[0] : IR;
     var whitePoint, blackPoint, gamma;
 
     switch (name) {
@@ -225,33 +231,34 @@ var ColorSpace = (function ColorSpaceClosure() {
       case 'PatternCS':
         var basePatternCS = IR[1];
         if (basePatternCS) {
-          basePatternCS = ColorSpace.fromIR(basePatternCS);
+          basePatternCS = ColorSpace.fromIR(basePatternCS, pdfFunctionFactory);
         }
         return new PatternCS(basePatternCS);
       case 'IndexedCS':
         var baseIndexedCS = IR[1];
         var hiVal = IR[2];
         var lookup = IR[3];
-        return new IndexedCS(ColorSpace.fromIR(baseIndexedCS), hiVal, lookup);
+        return new IndexedCS(ColorSpace.fromIR(baseIndexedCS,
+                                               pdfFunctionFactory),
+                             hiVal, lookup);
       case 'AlternateCS':
         var numComps = IR[1];
         var alt = IR[2];
         var tintFnIR = IR[3];
-
-        return new AlternateCS(numComps, ColorSpace.fromIR(alt),
-                               PDFFunction.fromIR(tintFnIR));
+        return new AlternateCS(numComps, ColorSpace.fromIR(alt,
+                                                           pdfFunctionFactory),
+                               pdfFunctionFactory.createFromIR(tintFnIR));
       case 'LabCS':
         whitePoint = IR[1];
         blackPoint = IR[2];
         var range = IR[3];
         return new LabCS(whitePoint, blackPoint, range);
       default:
-        error('Unknown name ' + name);
+        throw new FormatError(`Unknown colorspace name: ${name}`);
     }
-    return null;
   };
 
-  ColorSpace.parseToIR = function ColorSpace_parseToIR(cs, xref, res) {
+  ColorSpace.parseToIR = function(cs, xref, res, pdfFunctionFactory) {
     if (isName(cs)) {
       var colorSpaces = res.get('ColorSpace');
       if (isDict(colorSpaces)) {
@@ -263,13 +270,8 @@ var ColorSpace = (function ColorSpaceClosure() {
     }
 
     cs = xref.fetchIfRef(cs);
-    var mode;
-
     if (isName(cs)) {
-      mode = cs.name;
-      this.mode = mode;
-
-      switch (mode) {
+      switch (cs.name) {
         case 'DeviceGray':
         case 'G':
           return 'DeviceGrayCS';
@@ -282,11 +284,11 @@ var ColorSpace = (function ColorSpaceClosure() {
         case 'Pattern':
           return ['PatternCS', null];
         default:
-          error('unrecognized colorspace ' + mode);
+          throw new FormatError(`unrecognized colorspace ${cs.name}`);
       }
-    } else if (isArray(cs)) {
-      mode = xref.fetchIfRef(cs[0]).name;
-      this.mode = mode;
+    }
+    if (Array.isArray(cs)) {
+      var mode = xref.fetchIfRef(cs[0]).name;
       var numComps, params, alt, whitePoint, blackPoint, gamma;
 
       switch (mode) {
@@ -301,16 +303,16 @@ var ColorSpace = (function ColorSpaceClosure() {
           return 'DeviceCmykCS';
         case 'CalGray':
           params = xref.fetchIfRef(cs[1]);
-          whitePoint = params.get('WhitePoint');
-          blackPoint = params.get('BlackPoint');
+          whitePoint = params.getArray('WhitePoint');
+          blackPoint = params.getArray('BlackPoint');
           gamma = params.get('Gamma');
           return ['CalGrayCS', whitePoint, blackPoint, gamma];
         case 'CalRGB':
           params = xref.fetchIfRef(cs[1]);
-          whitePoint = params.get('WhitePoint');
-          blackPoint = params.get('BlackPoint');
-          gamma = params.get('Gamma');
-          var matrix = params.get('Matrix');
+          whitePoint = params.getArray('WhitePoint');
+          blackPoint = params.getArray('BlackPoint');
+          gamma = params.getArray('Gamma');
+          var matrix = params.getArray('Matrix');
           return ['CalRGBCS', whitePoint, blackPoint, gamma, matrix];
         case 'ICCBased':
           var stream = xref.fetchIfRef(cs[1]);
@@ -318,10 +320,11 @@ var ColorSpace = (function ColorSpaceClosure() {
           numComps = dict.get('N');
           alt = dict.get('Alternate');
           if (alt) {
-            var altIR = ColorSpace.parseToIR(alt, xref, res);
+            var altIR = ColorSpace.parseToIR(alt, xref, res,
+                                             pdfFunctionFactory);
             // Parse the /Alternate CS to ensure that the number of components
             // are correct, and also (indirectly) that it is not a PatternCS.
-            var altCS = ColorSpace.fromIR(altIR);
+            var altCS = ColorSpace.fromIR(altIR, pdfFunctionFactory);
             if (altCS.numComps === numComps) {
               return altIR;
             }
@@ -338,12 +341,14 @@ var ColorSpace = (function ColorSpaceClosure() {
         case 'Pattern':
           var basePatternCS = cs[1] || null;
           if (basePatternCS) {
-            basePatternCS = ColorSpace.parseToIR(basePatternCS, xref, res);
+            basePatternCS = ColorSpace.parseToIR(basePatternCS, xref, res,
+                                                 pdfFunctionFactory);
           }
           return ['PatternCS', basePatternCS];
         case 'Indexed':
         case 'I':
-          var baseIndexedCS = ColorSpace.parseToIR(cs[1], xref, res);
+          var baseIndexedCS = ColorSpace.parseToIR(cs[1], xref, res,
+                                                   pdfFunctionFactory);
           var hiVal = xref.fetchIfRef(cs[2]) + 1;
           var lookup = xref.fetchIfRef(cs[3]);
           if (isStream(lookup)) {
@@ -353,28 +358,21 @@ var ColorSpace = (function ColorSpaceClosure() {
         case 'Separation':
         case 'DeviceN':
           var name = xref.fetchIfRef(cs[1]);
-          numComps = 1;
-          if (isName(name)) {
-            numComps = 1;
-          } else if (isArray(name)) {
-            numComps = name.length;
-          }
-          alt = ColorSpace.parseToIR(cs[2], xref, res);
-          var tintFnIR = PDFFunction.getIR(xref, xref.fetchIfRef(cs[3]));
+          numComps = Array.isArray(name) ? name.length : 1;
+          alt = ColorSpace.parseToIR(cs[2], xref, res, pdfFunctionFactory);
+          let tintFnIR = pdfFunctionFactory.createIR(xref.fetchIfRef(cs[3]));
           return ['AlternateCS', numComps, alt, tintFnIR];
         case 'Lab':
           params = xref.fetchIfRef(cs[1]);
-          whitePoint = params.get('WhitePoint');
-          blackPoint = params.get('BlackPoint');
-          var range = params.get('Range');
+          whitePoint = params.getArray('WhitePoint');
+          blackPoint = params.getArray('BlackPoint');
+          var range = params.getArray('Range');
           return ['LabCS', whitePoint, blackPoint, range];
         default:
-          error('unimplemented color space object "' + mode + '"');
+          throw new FormatError(`unimplemented color space object "${mode}"`);
       }
-    } else {
-      error('unrecognized color space object: "' + cs + '"');
     }
-    return null;
+    throw new FormatError(`unrecognized color space object: "${cs}"`);
   };
   /**
    * Checks if a decode map matches the default decode map for a color space.
@@ -386,7 +384,7 @@ var ColorSpace = (function ColorSpaceClosure() {
    * @param {Number} n Number of components the color space has.
    */
   ColorSpace.isDefaultDecode = function ColorSpace_isDefaultDecode(decode, n) {
-    if (!isArray(decode)) {
+    if (!Array.isArray(decode)) {
       return true;
     }
 
@@ -411,7 +409,7 @@ var ColorSpace = (function ColorSpaceClosure() {
     },
     get cmyk() {
       return shadow(this, 'cmyk', new DeviceCmykCS());
-    }
+    },
   };
 
   return ColorSpace;
@@ -461,26 +459,22 @@ var AlternateCS = (function AlternateCSClosure() {
       var scaled = new Float32Array(numComps);
       var tinted = new Float32Array(baseNumComps);
       var i, j;
-      if (usesZeroToOneRange) {
-        for (i = 0; i < count; i++) {
-          for (j = 0; j < numComps; j++) {
-            scaled[j] = src[srcOffset++] * scale;
-          }
-          tintFn(scaled, 0, tinted, 0);
+
+      for (i = 0; i < count; i++) {
+        for (j = 0; j < numComps; j++) {
+          scaled[j] = src[srcOffset++] * scale;
+        }
+        tintFn(scaled, 0, tinted, 0);
+        if (usesZeroToOneRange) {
           for (j = 0; j < baseNumComps; j++) {
             baseBuf[pos++] = tinted[j] * 255;
           }
-        }
-      } else {
-        for (i = 0; i < count; i++) {
-          for (j = 0; j < numComps; j++) {
-            scaled[j] = src[srcOffset++] * scale;
-          }
-          tintFn(scaled, 0, tinted, 0);
+        } else {
           base.getRgbItem(tinted, 0, baseBuf, pos);
           pos += baseNumComps;
         }
       }
+
       if (!isPassthrough) {
         base.getRgbBuffer(baseBuf, 0, count, dest, destOffset, 8, alpha01);
       }
@@ -496,7 +490,7 @@ var AlternateCS = (function AlternateCSClosure() {
     isDefaultDecode: function AlternateCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
 
   return AlternateCS;
@@ -516,29 +510,27 @@ var IndexedCS = (function IndexedCSClosure() {
   function IndexedCS(base, highVal, lookup) {
     this.name = 'Indexed';
     this.numComps = 1;
-    this.defaultColor = new Uint8Array([0]);
+    this.defaultColor = new Uint8Array(this.numComps);
     this.base = base;
     this.highVal = highVal;
 
     var baseNumComps = base.numComps;
     var length = baseNumComps * highVal;
-    var lookupArray;
 
     if (isStream(lookup)) {
-      lookupArray = new Uint8Array(length);
+      this.lookup = new Uint8Array(length);
       var bytes = lookup.getBytes(length);
-      lookupArray.set(bytes);
+      this.lookup.set(bytes);
     } else if (isString(lookup)) {
-      lookupArray = new Uint8Array(length);
+      this.lookup = new Uint8Array(length);
       for (var i = 0; i < length; ++i) {
-        lookupArray[i] = lookup.charCodeAt(i);
+        this.lookup[i] = lookup.charCodeAt(i);
       }
-    } else if (lookup instanceof Uint8Array || lookup instanceof Array) {
-      lookupArray = lookup;
+    } else if (lookup instanceof Uint8Array) {
+      this.lookup = lookup;
     } else {
-      error('Unrecognized lookup table: ' + lookup);
+      throw new FormatError(`Unrecognized lookup table: ${lookup}`);
     }
-    this.lookup = lookupArray;
   }
 
   IndexedCS.prototype = {
@@ -547,7 +539,7 @@ var IndexedCS = (function IndexedCSClosure() {
                                               dest, destOffset) {
       var numComps = this.base.numComps;
       var start = src[srcOffset] * numComps;
-      this.base.getRgbItem(this.lookup, start, dest, destOffset);
+      this.base.getRgbBuffer(this.lookup, start, 1, dest, destOffset, 8, 0);
     },
     getRgbBuffer: function IndexedCS_getRgbBuffer(src, srcOffset, count,
                                                   dest, destOffset, bits,
@@ -573,7 +565,7 @@ var IndexedCS = (function IndexedCSClosure() {
       // indexed color maps shouldn't be changed
       return true;
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
   return IndexedCS;
 })();
@@ -582,7 +574,7 @@ var DeviceGrayCS = (function DeviceGrayCSClosure() {
   function DeviceGrayCS() {
     this.name = 'DeviceGray';
     this.numComps = 1;
-    this.defaultColor = new Float32Array([0]);
+    this.defaultColor = new Float32Array(this.numComps);
   }
 
   DeviceGrayCS.prototype = {
@@ -615,7 +607,7 @@ var DeviceGrayCS = (function DeviceGrayCSClosure() {
     isDefaultDecode: function DeviceGrayCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
   return DeviceGrayCS;
 })();
@@ -624,7 +616,7 @@ var DeviceRgbCS = (function DeviceRgbCSClosure() {
   function DeviceRgbCS() {
     this.name = 'DeviceRGB';
     this.numComps = 3;
-    this.defaultColor = new Float32Array([0, 0, 0]);
+    this.defaultColor = new Float32Array(this.numComps);
   }
   DeviceRgbCS.prototype = {
     getRgb: ColorSpace.prototype.getRgb,
@@ -664,7 +656,7 @@ var DeviceRgbCS = (function DeviceRgbCSClosure() {
     isDefaultDecode: function DeviceRgbCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
   return DeviceRgbCS;
 })();
@@ -717,7 +709,9 @@ var DeviceCmykCS = (function DeviceCmykCSClosure() {
   function DeviceCmykCS() {
     this.name = 'DeviceCMYK';
     this.numComps = 4;
-    this.defaultColor = new Float32Array([0, 0, 0, 1]);
+    this.defaultColor = new Float32Array(this.numComps);
+    // Set the fourth component to the maximum value for a black color.
+    this.defaultColor[3] = 1;
   }
   DeviceCmykCS.prototype = {
     getRgb: ColorSpace.prototype.getRgb,
@@ -744,7 +738,7 @@ var DeviceCmykCS = (function DeviceCmykCSClosure() {
     isDefaultDecode: function DeviceCmykCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
 
   return DeviceCmykCS;
@@ -757,10 +751,11 @@ var CalGrayCS = (function CalGrayCSClosure() {
   function CalGrayCS(whitePoint, blackPoint, gamma) {
     this.name = 'CalGray';
     this.numComps = 1;
-    this.defaultColor = new Float32Array([0]);
+    this.defaultColor = new Float32Array(this.numComps);
 
     if (!whitePoint) {
-      error('WhitePoint missing - required for color space CalGray');
+      throw new FormatError(
+        'WhitePoint missing - required for color space CalGray');
     }
     blackPoint = blackPoint || [0, 0, 0];
     gamma = gamma || 1;
@@ -778,8 +773,8 @@ var CalGrayCS = (function CalGrayCSClosure() {
 
     // Validate variables as per spec.
     if (this.XW < 0 || this.ZW < 0 || this.YW !== 1) {
-      error('Invalid WhitePoint components for ' + this.name +
-            ', no fallback available');
+      throw new FormatError(`Invalid WhitePoint components for ${this.name}` +
+                            ', no fallback available');
     }
 
     if (this.XB < 0 || this.YB < 0 || this.ZB < 0) {
@@ -841,7 +836,7 @@ var CalGrayCS = (function CalGrayCSClosure() {
     isDefaultDecode: function CalGrayCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
   return CalGrayCS;
 })();
@@ -880,10 +875,11 @@ var CalRGBCS = (function CalRGBCSClosure() {
   function CalRGBCS(whitePoint, blackPoint, gamma, matrix) {
     this.name = 'CalRGB';
     this.numComps = 3;
-    this.defaultColor = new Float32Array(3);
+    this.defaultColor = new Float32Array(this.numComps);
 
     if (!whitePoint) {
-      error('WhitePoint missing - required for color space CalRGB');
+      throw new FormatError(
+        'WhitePoint missing - required for color space CalRGB');
     }
     blackPoint = blackPoint || new Float32Array(3);
     gamma = gamma || new Float32Array([1, 1, 1]);
@@ -916,8 +912,8 @@ var CalRGBCS = (function CalRGBCSClosure() {
 
     // Validate variables as per spec.
     if (XW < 0 || ZW < 0 || YW !== 1) {
-      error('Invalid WhitePoint components for ' + this.name +
-            ', no fallback available');
+      throw new FormatError(`Invalid WhitePoint components for ${this.name}` +
+                            ', no fallback available');
     }
 
     if (XB < 0 || YB < 0 || ZB < 0) {
@@ -946,15 +942,15 @@ var CalRGBCS = (function CalRGBCSClosure() {
   }
 
   function matrixProduct(a, b, result) {
-      result[0] = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-      result[1] = a[3] * b[0] + a[4] * b[1] + a[5] * b[2];
-      result[2] = a[6] * b[0] + a[7] * b[1] + a[8] * b[2];
+    result[0] = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    result[1] = a[3] * b[0] + a[4] * b[1] + a[5] * b[2];
+    result[2] = a[6] * b[0] + a[7] * b[1] + a[8] * b[2];
   }
 
   function convertToFlat(sourceWhitePoint, LMS, result) {
-      result[0] = LMS[0] * 1 / sourceWhitePoint[0];
-      result[1] = LMS[1] * 1 / sourceWhitePoint[1];
-      result[2] = LMS[2] * 1 / sourceWhitePoint[2];
+    result[0] = LMS[0] * 1 / sourceWhitePoint[0];
+    result[1] = LMS[1] * 1 / sourceWhitePoint[1];
+    result[2] = LMS[2] * 1 / sourceWhitePoint[2];
   }
 
   function convertToD65(sourceWhitePoint, LMS, result) {
@@ -969,7 +965,7 @@ var CalRGBCS = (function CalRGBCSClosure() {
 
   function sRGBTransferFunction(color) {
     // See http://en.wikipedia.org/wiki/SRGB.
-    if (color <= 0.0031308){
+    if (color <= 0.0031308) {
       return adjustToRange(0, 1, 12.92 * color);
     }
 
@@ -1116,11 +1112,7 @@ var CalRGBCS = (function CalRGBCSClosure() {
   }
 
   CalRGBCS.prototype = {
-    getRgb: function CalRGBCS_getRgb(src, srcOffset) {
-      var rgb = new Uint8Array(3);
-      this.getRgbItem(src, srcOffset, rgb, 0);
-      return rgb;
-    },
+    getRgb: ColorSpace.prototype.getRgb,
     getRgbItem: function CalRGBCS_getRgbItem(src, srcOffset,
                                              dest, destOffset) {
       convertToRgb(this, src, srcOffset, dest, destOffset, 1);
@@ -1144,7 +1136,7 @@ var CalRGBCS = (function CalRGBCSClosure() {
     isDefaultDecode: function CalRGBCS_isDefaultDecode(decodeMap) {
       return ColorSpace.isDefaultDecode(decodeMap, this.numComps);
     },
-    usesZeroToOneRange: true
+    usesZeroToOneRange: true,
   };
   return CalRGBCS;
 })();
@@ -1156,10 +1148,11 @@ var LabCS = (function LabCSClosure() {
   function LabCS(whitePoint, blackPoint, range) {
     this.name = 'Lab';
     this.numComps = 3;
-    this.defaultColor = new Float32Array([0, 0, 0]);
+    this.defaultColor = new Float32Array(this.numComps);
 
     if (!whitePoint) {
-      error('WhitePoint missing - required for color space Lab');
+      throw new FormatError(
+        'WhitePoint missing - required for color space Lab');
     }
     blackPoint = blackPoint || [0, 0, 0];
     range = range || [-100, 100, -100, 100];
@@ -1181,7 +1174,8 @@ var LabCS = (function LabCSClosure() {
 
     // Validate vars as per spec
     if (this.XW < 0 || this.ZW < 0 || this.YW !== 1) {
-      error('Invalid WhitePoint components, no fallback available');
+      throw new FormatError(
+        'Invalid WhitePoint components, no fallback available');
     }
 
     if (this.XB < 0 || this.YB < 0 || this.ZB < 0) {
@@ -1200,11 +1194,13 @@ var LabCS = (function LabCSClosure() {
 
   // Function g(x) from spec
   function fn_g(x) {
+    var result;
     if (x >= 6 / 29) {
-      return x * x * x;
+      result = x * x * x;
     } else {
-      return (108 / 841) * (x - 4 / 29);
+      result = (108 / 841) * (x - 4 / 29);
     }
+    return result;
   }
 
   function decode(value, high1, low2, high2) {
@@ -1286,20 +1282,11 @@ var LabCS = (function LabCSClosure() {
       // ranges that are used.
       return true;
     },
-    usesZeroToOneRange: false
+    usesZeroToOneRange: false,
   };
   return LabCS;
 })();
 
-// TODO refactor to remove dependency on image.js
-function _setCoreImage(coreImage_) {
-  coreImage = coreImage_;
-  PDFImage = coreImage_.PDFImage;
-}
-exports._setCoreImage = _setCoreImage;
-
-exports.ColorSpace = ColorSpace;
-
-// TODO refactor to remove dependency on colorspace.js
-coreStream._setCoreColorSpace(exports);
-}));
+export {
+  ColorSpace,
+};

@@ -12,105 +12,177 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals PDFJS */
 
-'use strict';
+import {
+  createObjectURL, createPromiseCapability, getFilenameFromUrl, PDFJS,
+  removeNullCharacters
+} from 'pdfjs-lib';
 
 /**
  * @typedef {Object} PDFAttachmentViewerOptions
  * @property {HTMLDivElement} container - The viewer element.
+ * @property {EventBus} eventBus - The application event bus.
  * @property {DownloadManager} downloadManager - The download manager.
  */
 
 /**
  * @typedef {Object} PDFAttachmentViewerRenderParameters
- * @property {Array|null} attachments - An array of attachment objects.
+ * @property {Object|null} attachments - A lookup table of attachment objects.
  */
 
-/**
- * @class
- */
-var PDFAttachmentViewer = (function PDFAttachmentViewerClosure() {
+class PDFAttachmentViewer {
   /**
-   * @constructs PDFAttachmentViewer
    * @param {PDFAttachmentViewerOptions} options
    */
-  function PDFAttachmentViewer(options) {
-    this.attachments = null;
-    this.container = options.container;
-    this.downloadManager = options.downloadManager;
+  constructor({ container, eventBus, downloadManager, }) {
+    this.container = container;
+    this.eventBus = eventBus;
+    this.downloadManager = downloadManager;
+
+    this.reset();
+
+    this.eventBus.on('fileattachmentannotation',
+      this._appendAttachment.bind(this));
   }
 
-  PDFAttachmentViewer.prototype = {
-    reset: function PDFAttachmentViewer_reset() {
-      this.attachments = null;
+  reset(keepRenderedCapability = false) {
+    this.attachments = null;
 
-      var container = this.container;
-      while (container.firstChild) {
-        container.removeChild(container.firstChild);
+    // Remove the attachments from the DOM.
+    this.container.textContent = '';
+
+    if (!keepRenderedCapability) {
+      // NOTE: The *only* situation in which the `_renderedCapability` should
+      //       not be replaced is when appending file attachment annotations.
+      this._renderedCapability = createPromiseCapability();
+    }
+  }
+
+  /**
+   * @private
+   */
+  _dispatchEvent(attachmentsCount) {
+    this._renderedCapability.resolve();
+
+    this.eventBus.dispatch('attachmentsloaded', {
+      source: this,
+      attachmentsCount,
+    });
+  }
+
+  /**
+   * @private
+   */
+  _bindPdfLink(button, content, filename) {
+    if (PDFJS.disableCreateObjectURL) {
+      throw new Error('bindPdfLink: ' +
+                      'Unsupported "PDFJS.disableCreateObjectURL" value.');
+    }
+    let blobUrl;
+    button.onclick = function() {
+      if (!blobUrl) {
+        blobUrl = createObjectURL(content, 'application/pdf');
       }
-    },
-
-    /**
-     * @private
-     */
-    _dispatchEvent:
-        function PDFAttachmentViewer_dispatchEvent(attachmentsCount) {
-      var event = document.createEvent('CustomEvent');
-      event.initCustomEvent('attachmentsloaded', true, true, {
-        attachmentsCount: attachmentsCount
-      });
-      this.container.dispatchEvent(event);
-    },
-
-    /**
-     * @private
-     */
-    _bindLink:
-        function PDFAttachmentViewer_bindLink(button, content, filename) {
-      button.onclick = function downloadFile(e) {
-        this.downloadManager.downloadData(content, filename, '');
-        return false;
-      }.bind(this);
-    },
-
-    /**
-     * @param {PDFAttachmentViewerRenderParameters} params
-     */
-    render: function PDFAttachmentViewer_render(params) {
-      var attachments = (params && params.attachments) || null;
-      var attachmentsCount = 0;
-
-      if (this.attachments) {
-        this.reset();
+      let viewerUrl;
+      if (typeof PDFJSDev === 'undefined' || PDFJSDev.test('GENERIC')) {
+        // The current URL is the viewer, let's use it and append the file.
+        viewerUrl = '?file=' + encodeURIComponent(blobUrl + '#' + filename);
+      } else if (PDFJSDev.test('CHROME')) {
+        // In the Chrome extension, the URL is rewritten using the history API
+        // in viewer.js, so an absolute URL must be generated.
+        // eslint-disable-next-line no-undef
+        viewerUrl = chrome.runtime.getURL('/content/web/viewer.html') +
+          '?file=' + encodeURIComponent(blobUrl + '#' + filename);
+      } else if (PDFJSDev.test('FIREFOX || MOZCENTRAL')) {
+        // Let Firefox's content handler catch the URL and display the PDF.
+        viewerUrl = blobUrl + '?' + encodeURIComponent(filename);
       }
-      this.attachments = attachments;
+      window.open(viewerUrl);
+      return false;
+    };
+  }
+
+  /**
+   * @private
+   */
+  _bindLink(button, content, filename) {
+    button.onclick = () => {
+      this.downloadManager.downloadData(content, filename, '');
+      return false;
+    };
+  }
+
+  /**
+   * @param {PDFAttachmentViewerRenderParameters} params
+   */
+  render({ attachments, keepRenderedCapability = false, }) {
+    let attachmentsCount = 0;
+
+    if (this.attachments) {
+      this.reset(keepRenderedCapability === true);
+    }
+    this.attachments = attachments || null;
+
+    if (!attachments) {
+      this._dispatchEvent(attachmentsCount);
+      return;
+    }
+
+    let names = Object.keys(attachments).sort(function(a, b) {
+      return a.toLowerCase().localeCompare(b.toLowerCase());
+    });
+    attachmentsCount = names.length;
+
+    for (let i = 0; i < attachmentsCount; i++) {
+      let item = attachments[names[i]];
+      let filename = removeNullCharacters(getFilenameFromUrl(item.filename));
+
+      let div = document.createElement('div');
+      div.className = 'attachmentsItem';
+      let button = document.createElement('button');
+      button.textContent = filename;
+      if (/\.pdf$/i.test(filename) && !PDFJS.disableCreateObjectURL) {
+        this._bindPdfLink(button, item.content, filename);
+      } else {
+        this._bindLink(button, item.content, filename);
+      }
+
+      div.appendChild(button);
+      this.container.appendChild(div);
+    }
+
+    this._dispatchEvent(attachmentsCount);
+  }
+
+  /**
+   * Used to append FileAttachment annotations to the sidebar.
+   * @private
+   */
+  _appendAttachment({ id, filename, content, }) {
+    this._renderedCapability.promise.then(() => {
+      let attachments = this.attachments;
 
       if (!attachments) {
-        this._dispatchEvent(attachmentsCount);
-        return;
+        attachments = Object.create(null);
+      } else {
+        for (let name in attachments) {
+          if (id === name) {
+            return; // Ignore the new attachment if it already exists.
+          }
+        }
       }
-
-      var names = Object.keys(attachments).sort(function(a, b) {
-        return a.toLowerCase().localeCompare(b.toLowerCase());
+      attachments[id] = {
+        filename,
+        content,
+      };
+      this.render({
+        attachments,
+        keepRenderedCapability: true,
       });
-      attachmentsCount = names.length;
+    });
+  }
+}
 
-      for (var i = 0; i < attachmentsCount; i++) {
-        var item = attachments[names[i]];
-        var filename = PDFJS.getFilenameFromUrl(item.filename);
-        var div = document.createElement('div');
-        div.className = 'attachmentsItem';
-        var button = document.createElement('button');
-        this._bindLink(button, item.content, filename);
-        button.textContent = PDFJS.removeNullCharacters(filename);
-        div.appendChild(button);
-        this.container.appendChild(div);
-      }
-
-      this._dispatchEvent(attachmentsCount);
-    }
-  };
-
-  return PDFAttachmentViewer;
-})();
+export {
+  PDFAttachmentViewer,
+};

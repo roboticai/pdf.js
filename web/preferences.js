@@ -12,85 +12,109 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals DEFAULT_PREFERENCES, Promise */
 
-'use strict';
+import { cloneObj } from './ui_utils';
 
-//#include default_preferences.js
+let defaultPreferences = null;
+function getDefaultPreferences() {
+  if (!defaultPreferences) {
+    if (typeof PDFJSDev !== 'undefined' && PDFJSDev.test('PRODUCTION')) {
+      defaultPreferences = Promise.resolve(
+        PDFJSDev.json('$ROOT/web/default_preferences.json'));
+    } else {
+      defaultPreferences = new Promise(function (resolve) {
+        let xhr = new XMLHttpRequest();
+        xhr.open('GET', 'default_preferences.json');
+        xhr.onload = xhr.onerror = function loaded() {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (e) {
+            console.error(`Unable to load default preferences: ${e}`);
+            resolve({});
+          }
+        };
+        xhr.send();
+      });
+    }
+  }
+  return defaultPreferences;
+}
 
 /**
- * Preferences - Utility for storing persistent settings.
+ * BasePreferences - Abstract base class for storing persistent settings.
  *   Used for settings that should be applied to all opened documents,
  *   or every time the viewer is loaded.
  */
-var Preferences = {
-  prefs: Object.create(DEFAULT_PREFERENCES),
-  isInitializedPromiseResolved: false,
-  initializedPromise: null,
+class BasePreferences {
+  constructor() {
+    if (this.constructor === BasePreferences) {
+      throw new Error('Cannot initialize BasePreferences.');
+    }
+    this.prefs = null;
 
-  /**
-   * Initialize and fetch the current preference values from storage.
-   * @return {Promise} A promise that is resolved when the preferences
-   *                   have been initialized.
-   */
-  initialize: function preferencesInitialize() {
-    return this.initializedPromise =
-        this._readFromStorage(DEFAULT_PREFERENCES).then(function(prefObj) {
-      this.isInitializedPromiseResolved = true;
+    this._initializedPromise = getDefaultPreferences().then((defaults) => {
+      Object.defineProperty(this, 'defaults', {
+        value: Object.freeze(defaults),
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+
+      this.prefs = cloneObj(defaults);
+      return this._readFromStorage(defaults);
+    }).then((prefObj) => {
       if (prefObj) {
         this.prefs = prefObj;
       }
-    }.bind(this));
-  },
+    });
+  }
 
   /**
    * Stub function for writing preferences to storage.
-   * NOTE: This should be overridden by a build-specific function defined below.
    * @param {Object} prefObj The preferences that should be written to storage.
    * @return {Promise} A promise that is resolved when the preference values
    *                   have been written.
    */
-  _writeToStorage: function preferences_writeToStorage(prefObj) {
-    return Promise.resolve();
-  },
+  _writeToStorage(prefObj) {
+    return Promise.reject(new Error('Not implemented: _writeToStorage'));
+  }
 
   /**
    * Stub function for reading preferences from storage.
-   * NOTE: This should be overridden by a build-specific function defined below.
    * @param {Object} prefObj The preferences that should be read from storage.
    * @return {Promise} A promise that is resolved with an {Object} containing
    *                   the preferences that have been read.
    */
-  _readFromStorage: function preferences_readFromStorage(prefObj) {
-    return Promise.resolve();
-  },
+  _readFromStorage(prefObj) {
+    return Promise.reject(new Error('Not implemented: _readFromStorage'));
+  }
 
   /**
    * Reset the preferences to their default values and update storage.
    * @return {Promise} A promise that is resolved when the preference values
    *                   have been reset.
    */
-  reset: function preferencesReset() {
-    return this.initializedPromise.then(function() {
-      this.prefs = Object.create(DEFAULT_PREFERENCES);
-      return this._writeToStorage(DEFAULT_PREFERENCES);
-    }.bind(this));
-  },
+  reset() {
+    return this._initializedPromise.then(() => {
+      this.prefs = cloneObj(this.defaults);
+      return this._writeToStorage(this.defaults);
+    });
+  }
 
   /**
    * Replace the current preference values with the ones from storage.
    * @return {Promise} A promise that is resolved when the preference values
    *                   have been updated.
    */
-  reload: function preferencesReload() {
-    return this.initializedPromise.then(function () {
-      this._readFromStorage(DEFAULT_PREFERENCES).then(function(prefObj) {
-        if (prefObj) {
-          this.prefs = prefObj;
-        }
-      }.bind(this));
-    }.bind(this));
-  },
+  reload() {
+    return this._initializedPromise.then(() => {
+      return this._readFromStorage(this.defaults);
+    }).then((prefObj) => {
+      if (prefObj) {
+        this.prefs = prefObj;
+      }
+    });
+  }
 
   /**
    * Set the value of a preference.
@@ -99,33 +123,32 @@ var Preferences = {
    * @return {Promise} A promise that is resolved when the value has been set,
    *                   provided that the preference exists and the types match.
    */
-  set: function preferencesSet(name, value) {
-    return this.initializedPromise.then(function () {
-      if (DEFAULT_PREFERENCES[name] === undefined) {
-        throw new Error('preferencesSet: \'' + name + '\' is undefined.');
+  set(name, value) {
+    return this._initializedPromise.then(() => {
+      if (this.defaults[name] === undefined) {
+        throw new Error(`Set preference: "${name}" is undefined.`);
       } else if (value === undefined) {
-        throw new Error('preferencesSet: no value is specified.');
+        throw new Error('Set preference: no value is specified.');
       }
-      var valueType = typeof value;
-      var defaultType = typeof DEFAULT_PREFERENCES[name];
+      let valueType = typeof value;
+      let defaultType = typeof this.defaults[name];
 
       if (valueType !== defaultType) {
         if (valueType === 'number' && defaultType === 'string') {
           value = value.toString();
         } else {
-          throw new Error('Preferences_set: \'' + value + '\' is a \"' +
-                          valueType + '\", expected \"' + defaultType + '\".');
+          throw new Error(`Set preference: "${value}" is a ${valueType}, ` +
+                          `expected a ${defaultType}.`);
         }
       } else {
-        if (valueType === 'number' && (value | 0) !== value) {
-          throw new Error('Preferences_set: \'' + value +
-                          '\' must be an \"integer\".');
+        if (valueType === 'number' && !Number.isInteger(value)) {
+          throw new Error(`Set preference: "${value}" must be an integer.`);
         }
       }
       this.prefs[name] = value;
       return this._writeToStorage(this.prefs);
-    }.bind(this));
-  },
+    });
+  }
 
   /**
    * Get the value of a preference.
@@ -133,79 +156,24 @@ var Preferences = {
    * @return {Promise} A promise that is resolved with a {boolean|number|string}
    *                   containing the value of the preference.
    */
-  get: function preferencesGet(name) {
-    return this.initializedPromise.then(function () {
-      var defaultValue = DEFAULT_PREFERENCES[name];
+  get(name) {
+    return this._initializedPromise.then(() => {
+      let defaultValue = this.defaults[name];
 
       if (defaultValue === undefined) {
-        throw new Error('preferencesGet: \'' + name + '\' is undefined.');
+        throw new Error(`Get preference: "${name}" is undefined.`);
       } else {
-        var prefValue = this.prefs[name];
+        let prefValue = this.prefs[name];
 
         if (prefValue !== undefined) {
           return prefValue;
         }
       }
       return defaultValue;
-    }.bind(this));
+    });
   }
-};
+}
 
-//#if CHROME
-//Preferences._writeToStorage = function (prefObj) {
-//  return new Promise(function (resolve) {
-//    if (prefObj == DEFAULT_PREFERENCES) {
-//      var keysToRemove = Object.keys(DEFAULT_PREFERENCES);
-//      // If the storage is reset, remove the keys so that the values from
-//      // managed storage are applied again.
-//      chrome.storage.local.remove(keysToRemove, function() {
-//        resolve();
-//      });
-//    } else {
-//      chrome.storage.local.set(prefObj, function() {
-//        resolve();
-//      });
-//    }
-//  });
-//};
-//
-//Preferences._readFromStorage = function (prefObj) {
-//  return new Promise(function (resolve) {
-//    if (chrome.storage.managed) {
-//      // Get preferences as set by the system administrator.
-//      // See extensions/chromium/preferences_schema.json for more information.
-//      // These preferences can be overridden by the user.
-//      chrome.storage.managed.get(DEFAULT_PREFERENCES, getPreferences);
-//    } else {
-//      // Managed storage not supported, e.g. in old Chromium versions.
-//      getPreferences(DEFAULT_PREFERENCES);
-//    }
-//
-//    function getPreferences(defaultPrefs) {
-//      if (chrome.runtime.lastError) {
-//        // Managed storage not supported, e.g. in Opera.
-//        defaultPrefs = DEFAULT_PREFERENCES;
-//      }
-//      chrome.storage.local.get(defaultPrefs, function(readPrefs) {
-//        resolve(readPrefs);
-//      });
-//    }
-//  });
-//};
-//#endif
-
-//#if !(FIREFOX || MOZCENTRAL || CHROME)
-Preferences._writeToStorage = function (prefObj) {
-  return new Promise(function (resolve) {
-    localStorage.setItem('pdfjs.preferences', JSON.stringify(prefObj));
-    resolve();
-  });
+export {
+  BasePreferences,
 };
-
-Preferences._readFromStorage = function (prefObj) {
-  return new Promise(function (resolve) {
-    var readPrefs = JSON.parse(localStorage.getItem('pdfjs.preferences'));
-    resolve(readPrefs);
-  });
-};
-//#endif

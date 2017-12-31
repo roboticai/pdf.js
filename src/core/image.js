@@ -13,60 +13,23 @@
  * limitations under the License.
  */
 
-'use strict';
-
-(function (root, factory) {
-  if (typeof define === 'function' && define.amd) {
-    define('pdfjs/core/image', ['exports', 'pdfjs/shared/util',
-      'pdfjs/core/primitives', 'pdfjs/core/colorspace', 'pdfjs/core/stream',
-      'pdfjs/core/jpx'], factory);
-  } else if (typeof exports !== 'undefined') {
-    factory(exports, require('../shared/util.js'), require('./primitives.js'),
-      require('./colorspace.js'), require('./stream.js'),
-      require('./jpx.js'));
-  } else {
-    factory((root.pdfjsCoreImage = {}), root.pdfjsSharedUtil,
-      root.pdfjsCorePrimitives, root.pdfjsCoreColorSpace, root.pdfjsCoreStream,
-      root.pdfjsCoreJpx);
-  }
-}(this, function (exports, sharedUtil, corePrimitives, coreColorSpace,
-                  coreStream, coreJpx) {
-
-var ImageKind = sharedUtil.ImageKind;
-var assert = sharedUtil.assert;
-var error = sharedUtil.error;
-var info = sharedUtil.info;
-var isArray = sharedUtil.isArray;
-var warn = sharedUtil.warn;
-var Name = corePrimitives.Name;
-var isStream = corePrimitives.isStream;
-var ColorSpace = coreColorSpace.ColorSpace;
-var DecodeStream = coreStream.DecodeStream;
-var Stream = coreStream.Stream;
-var JpegStream = coreStream.JpegStream;
-var JpxImage = coreJpx.JpxImage;
+import { assert, FormatError, ImageKind, info, warn } from '../shared/util';
+import { isStream, Name } from './primitives';
+import { ColorSpace } from './colorspace';
+import { DecodeStream } from './stream';
+import { JpegStream } from './jpeg_stream';
+import { JpxImage } from './jpx';
 
 var PDFImage = (function PDFImageClosure() {
   /**
-   * Decode the image in the main thread if it supported. Resovles the promise
+   * Decodes the image using native decoder if possible. Resolves the promise
    * when the image data is ready.
    */
-  function handleImageData(handler, xref, res, image) {
-    if (image instanceof JpegStream && image.isNativelyDecodable(xref, res)) {
-      // For natively supported jpegs send them to the main thread for decoding.
-      var dict = image.dict;
-      var colorSpace = dict.get('ColorSpace', 'CS');
-      colorSpace = ColorSpace.parse(colorSpace, xref, res);
-      var numComps = colorSpace.numComps;
-      var decodePromise = handler.sendWithPromise('JpegDecode',
-                                                  [image.getIR(), numComps]);
-      return decodePromise.then(function (message) {
-        var data = message.data;
-        return new Stream(data, 0, data.length, image.dict);
-      });
-    } else {
-      return Promise.resolve(image);
+  function handleImageData(image, nativeDecoder) {
+    if (nativeDecoder && nativeDecoder.canDecode(image)) {
+      return nativeDecoder.decode(image);
     }
+    return Promise.resolve(image);
   }
 
   /**
@@ -79,7 +42,41 @@ var PDFImage = (function PDFImageClosure() {
     return (value < 0 ? 0 : (value > max ? max : value));
   }
 
-  function PDFImage(xref, res, image, inline, smask, mask, isMask) {
+  /**
+   * Resizes an image mask with 1 component.
+   * @param {TypedArray} src - The source buffer.
+   * @param {Number} bpc - Number of bits per component.
+   * @param {Number} w1 - Original width.
+   * @param {Number} h1 - Original height.
+   * @param {Number} w2 - New width.
+   * @param {Number} h2 - New height.
+   * @returns {TypedArray} The resized image mask buffer.
+   */
+  function resizeImageMask(src, bpc, w1, h1, w2, h2) {
+    var length = w2 * h2;
+    var dest = (bpc <= 8 ? new Uint8Array(length) :
+      (bpc <= 16 ? new Uint16Array(length) : new Uint32Array(length)));
+    var xRatio = w1 / w2;
+    var yRatio = h1 / h2;
+    var i, j, py, newIndex = 0, oldIndex;
+    var xScaled = new Uint16Array(w2);
+    var w1Scanline = w1;
+
+    for (i = 0; i < w2; i++) {
+      xScaled[i] = Math.floor(i * xRatio);
+    }
+    for (i = 0; i < h2; i++) {
+      py = Math.floor(i * yRatio) * w1Scanline;
+      for (j = 0; j < w2; j++) {
+        oldIndex = py + xScaled[j];
+        dest[newIndex++] = src[oldIndex];
+      }
+    }
+    return dest;
+  }
+
+  function PDFImage({ xref, res, image, smask = null, mask = null,
+                      isMask = false, pdfFunctionFactory, }) {
     this.image = image;
     var dict = image.dict;
     if (dict.has('Filter')) {
@@ -101,8 +98,8 @@ var PDFImage = (function PDFImageClosure() {
     this.height = dict.get('Height', 'H');
 
     if (this.width < 1 || this.height < 1) {
-      error('Invalid image width: ' + this.width + ' or height: ' +
-            this.height);
+      throw new FormatError(`Invalid image width: ${this.width} or ` +
+                            `height: ${this.height}`);
     }
 
     this.interpolate = dict.get('Interpolate', 'I') || false;
@@ -116,7 +113,8 @@ var PDFImage = (function PDFImageClosure() {
         if (this.imageMask) {
           bitsPerComponent = 1;
         } else {
-          error('Bits per component missing in image: ' + this.imageMask);
+          throw new FormatError(
+            `Bits per component missing in image: ${this.imageMask}`);
         }
       }
     }
@@ -137,15 +135,16 @@ var PDFImage = (function PDFImageClosure() {
             colorSpace = Name.get('DeviceCMYK');
             break;
           default:
-            error('JPX images with ' + this.numComps +
-                  ' color components not supported.');
+            throw new Error(`JPX images with ${this.numComps} ` +
+                            'color components not supported.');
         }
       }
-      this.colorSpace = ColorSpace.parse(colorSpace, xref, res);
+      this.colorSpace = ColorSpace.parse(colorSpace, xref, res,
+                                         pdfFunctionFactory);
       this.numComps = this.colorSpace.numComps;
     }
 
-    this.decode = dict.get('Decode', 'D');
+    this.decode = dict.getArray('Decode', 'D');
     this.needsDecode = false;
     if (this.decode &&
         ((this.colorSpace && !this.colorSpace.isDefaultDecode(this.decode)) ||
@@ -164,14 +163,25 @@ var PDFImage = (function PDFImageClosure() {
     }
 
     if (smask) {
-      this.smask = new PDFImage(xref, res, smask, false);
+      this.smask = new PDFImage({
+        xref,
+        res,
+        image: smask,
+        pdfFunctionFactory,
+      });
     } else if (mask) {
       if (isStream(mask)) {
         var maskDict = mask.dict, imageMask = maskDict.get('ImageMask', 'IM');
         if (!imageMask) {
           warn('Ignoring /Mask in image without /ImageMask.');
         } else {
-          this.mask = new PDFImage(xref, res, mask, false, null, null, true);
+          this.mask = new PDFImage({
+            xref,
+            res,
+            image: mask,
+            isMask: true,
+            pdfFunctionFactory,
+          });
         }
       } else {
         // Color key mask (just an array).
@@ -183,9 +193,10 @@ var PDFImage = (function PDFImageClosure() {
    * Handles processing of image data and returns the Promise that is resolved
    * with a PDFImage when the image is ready to be used.
    */
-  PDFImage.buildImage = function PDFImage_buildImage(handler, xref,
-                                                     res, image, inline) {
-    var imagePromise = handleImageData(handler, xref, res, image);
+  PDFImage.buildImage = function({ handler, xref, res, image,
+                                   nativeDecoder = null,
+                                   pdfFunctionFactory, }) {
+    var imagePromise = handleImageData(image, nativeDecoder);
     var smaskPromise;
     var maskPromise;
 
@@ -193,14 +204,14 @@ var PDFImage = (function PDFImageClosure() {
     var mask = image.dict.get('Mask');
 
     if (smask) {
-      smaskPromise = handleImageData(handler, xref, res, smask);
+      smaskPromise = handleImageData(smask, nativeDecoder);
       maskPromise = Promise.resolve(null);
     } else {
       smaskPromise = Promise.resolve(null);
       if (mask) {
         if (isStream(mask)) {
-          maskPromise = handleImageData(handler, xref, res, mask);
-        } else if (isArray(mask)) {
+          maskPromise = handleImageData(mask, nativeDecoder);
+        } else if (Array.isArray(mask)) {
           maskPromise = Promise.resolve(mask);
         } else {
           warn('Unsupported mask format.');
@@ -211,78 +222,20 @@ var PDFImage = (function PDFImageClosure() {
       }
     }
     return Promise.all([imagePromise, smaskPromise, maskPromise]).then(
-      function(results) {
-        var imageData = results[0];
-        var smaskData = results[1];
-        var maskData = results[2];
-        return new PDFImage(xref, res, imageData, inline, smaskData, maskData);
+      function([imageData, smaskData, maskData]) {
+        return new PDFImage({
+          xref,
+          res,
+          image: imageData,
+          smask: smaskData,
+          mask: maskData,
+          pdfFunctionFactory,
+        });
       });
   };
 
-  /**
-   * Resize an image using the nearest neighbor algorithm. Currently only
-   * supports one and three component images.
-   * @param {TypedArray} pixels The original image with one component.
-   * @param {Number} bpc Number of bits per component.
-   * @param {Number} components Number of color components, 1 or 3 is supported.
-   * @param {Number} w1 Original width.
-   * @param {Number} h1 Original height.
-   * @param {Number} w2 New width.
-   * @param {Number} h2 New height.
-   * @param {TypedArray} dest (Optional) The destination buffer.
-   * @param {Number} alpha01 (Optional) Size reserved for the alpha channel.
-   * @return {TypedArray} Resized image data.
-   */
-  PDFImage.resize = function PDFImage_resize(pixels, bpc, components,
-                                             w1, h1, w2, h2, dest, alpha01) {
-
-    if (components !== 1 && components !== 3) {
-      error('Unsupported component count for resizing.');
-    }
-
-    var length = w2 * h2 * components;
-    var temp = dest ? dest : (bpc <= 8 ? new Uint8Array(length) :
-        (bpc <= 16 ? new Uint16Array(length) : new Uint32Array(length)));
-    var xRatio = w1 / w2;
-    var yRatio = h1 / h2;
-    var i, j, py, newIndex = 0, oldIndex;
-    var xScaled = new Uint16Array(w2);
-    var w1Scanline = w1 * components;
-    if (alpha01 !== 1) {
-      alpha01 = 0;
-    }
-
-    for (j = 0; j < w2; j++) {
-      xScaled[j] = Math.floor(j * xRatio) * components;
-    }
-
-    if (components === 1) {
-      for (i = 0; i < h2; i++) {
-        py = Math.floor(i * yRatio) * w1Scanline;
-        for (j = 0; j < w2; j++) {
-          oldIndex = py + xScaled[j];
-          temp[newIndex++] = pixels[oldIndex];
-        }
-      }
-    } else if (components === 3) {
-      for (i = 0; i < h2; i++) {
-        py = Math.floor(i * yRatio) * w1Scanline;
-        for (j = 0; j < w2; j++) {
-          oldIndex = py + xScaled[j];
-          temp[newIndex++] = pixels[oldIndex++];
-          temp[newIndex++] = pixels[oldIndex++];
-          temp[newIndex++] = pixels[oldIndex++];
-          newIndex += alpha01;
-        }
-      }
-    }
-    return temp;
-  };
-
-  PDFImage.createMask =
-      function PDFImage_createMask(imgArray, width, height,
-                                   imageIsFromDecodeStream, inverseDecode) {
-
+  PDFImage.createMask = function({ imgArray, width, height,
+                                   imageIsFromDecodeStream, inverseDecode, }) {
     // |imgArray| might not contain full data for every pixel of the mask, so
     // we need to distinguish between |computedLength| and |actualLength|.
     // In particular, if inverseDecode is true, then the array we return must
@@ -314,11 +267,11 @@ var PDFImage = (function PDFImageClosure() {
     // in this thread can be relying on its contents.
     if (inverseDecode) {
       for (i = 0; i < actualLength; i++) {
-        data[i] = ~data[i];
+        data[i] ^= 0xFF;
       }
     }
 
-    return {data: data, width: width, height: height};
+    return { data, width, height, };
   };
 
   PDFImage.prototype = {
@@ -334,7 +287,7 @@ var PDFImage = (function PDFImageClosure() {
                       this.mask && this.mask.height || 0);
     },
 
-    decodeBuffer: function PDFImage_decodeBuffer(buffer) {
+    decodeBuffer(buffer) {
       var bpc = this.bpc;
       var numComps = this.numComps;
 
@@ -360,7 +313,7 @@ var PDFImage = (function PDFImageClosure() {
       }
     },
 
-    getComponents: function PDFImage_getComponents(buffer) {
+    getComponents(buffer) {
       var bpc = this.bpc;
 
       // This image doesn't require any extra work.
@@ -402,7 +355,7 @@ var PDFImage = (function PDFImageClosure() {
             i += 8;
           }
 
-          // handle remaing bits
+          // handle remaining bits
           if (i < loop2End) {
             buf = buffer[bufferPos++];
             mask = 128;
@@ -437,8 +390,7 @@ var PDFImage = (function PDFImageClosure() {
       return output;
     },
 
-    fillOpacity: function PDFImage_fillOpacity(rgbaBuf, width, height,
-                                               actualHeight, image) {
+    fillOpacity(rgbaBuf, width, height, actualHeight, image) {
       var smask = this.smask;
       var mask = this.mask;
       var alphaBuf, sw, sh, i, ii, j;
@@ -449,8 +401,8 @@ var PDFImage = (function PDFImageClosure() {
         alphaBuf = new Uint8Array(sw * sh);
         smask.fillGrayBuffer(alphaBuf);
         if (sw !== width || sh !== height) {
-          alphaBuf = PDFImage.resize(alphaBuf, smask.bpc, 1, sw, sh, width,
-                                     height);
+          alphaBuf = resizeImageMask(alphaBuf, smask.bpc, sw, sh,
+                                     width, height);
         }
       } else if (mask) {
         if (mask instanceof PDFImage) {
@@ -466,11 +418,11 @@ var PDFImage = (function PDFImageClosure() {
           }
 
           if (sw !== width || sh !== height) {
-            alphaBuf = PDFImage.resize(alphaBuf, mask.bpc, 1, sw, sh, width,
-                                       height);
+            alphaBuf = resizeImageMask(alphaBuf, mask.bpc, sw, sh,
+                                       width, height);
           }
-        } else if (isArray(mask)) {
-          // Color key mask: if any of the compontents are outside the range
+        } else if (Array.isArray(mask)) {
+          // Color key mask: if any of the components are outside the range
           // then they should be painted.
           alphaBuf = new Uint8Array(width * height);
           var numComps = this.numComps;
@@ -488,7 +440,7 @@ var PDFImage = (function PDFImageClosure() {
             alphaBuf[i] = opacity;
           }
         } else {
-          error('Unknown mask format.');
+          throw new FormatError('Unknown mask format.');
         }
       }
 
@@ -504,7 +456,7 @@ var PDFImage = (function PDFImageClosure() {
       }
     },
 
-    undoPreblend: function PDFImage_undoPreblend(buffer, width, height) {
+    undoPreblend(buffer, width, height) {
       var matte = this.smask && this.smask.matte;
       if (!matte) {
         return;
@@ -535,12 +487,12 @@ var PDFImage = (function PDFImageClosure() {
       }
     },
 
-    createImageData: function PDFImage_createImageData(forceRGBA) {
+    createImageData(forceRGBA = false) {
       var drawWidth = this.drawWidth;
       var drawHeight = this.drawHeight;
       var imgData = { // other fields are filled in below
         width: drawWidth,
-        height: drawHeight
+        height: drawHeight,
       };
 
       var numComps = this.numComps;
@@ -594,14 +546,21 @@ var PDFImage = (function PDFImageClosure() {
           }
           return imgData;
         }
-        if (this.image instanceof JpegStream && !this.smask && !this.mask &&
-            (this.colorSpace.name === 'DeviceGray' ||
-             this.colorSpace.name === 'DeviceRGB' ||
-             this.colorSpace.name === 'DeviceCMYK')) {
-          imgData.kind = ImageKind.RGB_24BPP;
-          imgData.data = this.getImageBytes(originalHeight * rowBytes,
-                                            drawWidth, drawHeight, true);
-          return imgData;
+        if (this.image instanceof JpegStream && !this.smask && !this.mask) {
+          let imageLength = originalHeight * rowBytes;
+          switch (this.colorSpace.name) {
+            case 'DeviceGray':
+              // Avoid truncating the image, since `JpegImage.getData`
+              // will expand the image data when `forceRGB === true`.
+              imageLength *= 3;
+              /* falls through */
+            case 'DeviceRGB':
+            case 'DeviceCMYK':
+              imgData.kind = ImageKind.RGB_24BPP;
+              imgData.data = this.getImageBytes(imageLength,
+                drawWidth, drawHeight, /* forceRGB = */ true);
+              return imgData;
+          }
         }
       }
 
@@ -644,10 +603,11 @@ var PDFImage = (function PDFImageClosure() {
       return imgData;
     },
 
-    fillGrayBuffer: function PDFImage_fillGrayBuffer(buffer) {
+    fillGrayBuffer(buffer) {
       var numComps = this.numComps;
       if (numComps !== 1) {
-        error('Reading gray scale from a color image: ' + numComps);
+        throw new FormatError(
+          `Reading gray scale from a color image: ${numComps}`);
       }
 
       var width = this.width;
@@ -689,21 +649,17 @@ var PDFImage = (function PDFImageClosure() {
       }
     },
 
-    getImageBytes: function PDFImage_getImageBytes(length,
-                                                   drawWidth, drawHeight,
-                                                   forceRGB) {
+    getImageBytes(length, drawWidth, drawHeight, forceRGB = false) {
       this.image.reset();
       this.image.drawWidth = drawWidth || this.width;
       this.image.drawHeight = drawHeight || this.height;
       this.image.forceRGB = !!forceRGB;
       return this.image.getBytes(length);
-    }
+    },
   };
   return PDFImage;
 })();
 
-exports.PDFImage = PDFImage;
-
-// TODO refactor to remove dependency on colorspace.js
-coreColorSpace._setCoreImage(exports);
-}));
+export {
+  PDFImage,
+};

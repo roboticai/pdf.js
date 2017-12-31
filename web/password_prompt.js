@@ -12,70 +12,94 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals PDFJS, mozL10n, OverlayManager */
 
-'use strict';
+import { NullL10n } from './ui_utils';
+import { PasswordResponses } from 'pdfjs-lib';
 
-var PasswordPrompt = {
-  overlayName: null,
-  updatePassword: null,
-  reason: null,
-  passwordField: null,
-  passwordText: null,
-  passwordSubmit: null,
-  passwordCancel: null,
+/**
+ * @typedef {Object} PasswordPromptOptions
+ * @property {string} overlayName - Name of the overlay for the overlay manager.
+ * @property {HTMLDivElement} container - Div container for the overlay.
+ * @property {HTMLParagraphElement} label - Label containing instructions for
+ *                                          entering the password.
+ * @property {HTMLInputElement} input - Input field for entering the password.
+ * @property {HTMLButtonElement} submitButton - Button for submitting the
+ *                                              password.
+ * @property {HTMLButtonElement} cancelButton - Button for cancelling password
+ *                                              entry.
+ */
 
-  initialize: function secondaryToolbarInitialize(options) {
+class PasswordPrompt {
+  /**
+   * @param {PasswordPromptOptions} options
+   * @param {OverlayManager} overlayManager - Manager for the viewer overlays.
+   * @param {IL10n} l10n - Localization service.
+   */
+  constructor(options, overlayManager, l10n = NullL10n) {
     this.overlayName = options.overlayName;
-    this.passwordField = options.passwordField;
-    this.passwordText = options.passwordText;
-    this.passwordSubmit = options.passwordSubmit;
-    this.passwordCancel = options.passwordCancel;
+    this.container = options.container;
+    this.label = options.label;
+    this.input = options.input;
+    this.submitButton = options.submitButton;
+    this.cancelButton = options.cancelButton;
+    this.overlayManager = overlayManager;
+    this.l10n = l10n;
+
+    this.updateCallback = null;
+    this.reason = null;
 
     // Attach the event listeners.
-    this.passwordSubmit.addEventListener('click',
-      this.verifyPassword.bind(this));
-
-    this.passwordCancel.addEventListener('click', this.close.bind(this));
-
-    this.passwordField.addEventListener('keydown', function (e) {
+    this.submitButton.addEventListener('click', this.verify.bind(this));
+    this.cancelButton.addEventListener('click', this.close.bind(this));
+    this.input.addEventListener('keydown', (e) => {
       if (e.keyCode === 13) { // Enter key
-        this.verifyPassword();
+        this.verify();
       }
-    }.bind(this));
+    });
 
-    OverlayManager.register(this.overlayName, this.close.bind(this), true);
-  },
+    this.overlayManager.register(this.overlayName, this.container,
+                                 this.close.bind(this), true);
+  }
 
-  open: function passwordPromptOpen() {
-    OverlayManager.open(this.overlayName).then(function () {
-      this.passwordField.type = 'password';
-      this.passwordField.focus();
+  open() {
+    this.overlayManager.open(this.overlayName).then(() => {
+      this.input.focus();
 
-      var promptString = mozL10n.get('password_label', null,
-        'Enter the password to open this PDF file.');
-
-      if (this.reason === PDFJS.PasswordResponses.INCORRECT_PASSWORD) {
-        promptString = mozL10n.get('password_invalid', null,
+      let promptString;
+      if (this.reason === PasswordResponses.INCORRECT_PASSWORD) {
+        promptString = this.l10n.get('password_invalid', null,
           'Invalid password. Please try again.');
+      } else {
+        promptString = this.l10n.get('password_label', null,
+          'Enter the password to open this PDF file.');
       }
 
-      this.passwordText.textContent = promptString;
-    }.bind(this));
-  },
+      promptString.then((msg) => {
+        this.label.textContent = msg;
+      });
+    });
+  }
 
-  close: function passwordPromptClose() {
-    OverlayManager.close(this.overlayName).then(function () {
-      this.passwordField.value = '';
-      this.passwordField.type = '';
-    }.bind(this));
-  },
+  close() {
+    this.overlayManager.close(this.overlayName).then(() => {
+      this.input.value = '';
+    });
+  }
 
-  verifyPassword: function passwordPromptVerifyPassword() {
-    var password = this.passwordField.value;
+  verify() {
+    let password = this.input.value;
     if (password && password.length > 0) {
       this.close();
-      return this.updatePassword(password);
+      return this.updateCallback(password);
     }
   }
+
+  setUpdateCallback(updateCallback, reason) {
+    this.updateCallback = updateCallback;
+    this.reason = reason;
+  }
+}
+
+export {
+  PasswordPrompt,
 };
