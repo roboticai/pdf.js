@@ -15,7 +15,8 @@
 
 import { assert, createPromiseCapability, stringToBytes } from '../shared/util';
 import {
-  createResponseStatusError, validateRangeRequestCapabilities
+  createResponseStatusError, extractFilenameFromHeader,
+  validateRangeRequestCapabilities
 } from './network_utils';
 import globalScope from '../shared/global_scope';
 
@@ -340,6 +341,7 @@ function PDFNetworkStreamFullRequestReader(manager, source) {
   this._requests = [];
   this._done = false;
   this._storedError = undefined;
+  this._filename = null;
 
   this.onProgress = null;
 }
@@ -350,22 +352,24 @@ PDFNetworkStreamFullRequestReader.prototype = {
     var fullRequestXhrId = this._fullRequestId;
     var fullRequestXhr = this._manager.getRequestXhr(fullRequestXhrId);
 
+    const getResponseHeader = (name) => {
+      return fullRequestXhr.getResponseHeader(name);
+    };
     let { allowRangeRequests, suggestedLength, } =
       validateRangeRequestCapabilities({
-        getResponseHeader: (name) => {
-          return fullRequestXhr.getResponseHeader(name);
-        },
+        getResponseHeader,
         isHttp: this._manager.isHttp,
         rangeChunkSize: this._rangeChunkSize,
         disableRange: this._disableRange,
       });
 
-    // Setting right content length.
-    this._contentLength = suggestedLength || this._contentLength;
-
     if (allowRangeRequests) {
       this._isRangeSupported = true;
     }
+    // Setting right content length.
+    this._contentLength = suggestedLength || this._contentLength;
+
+    this._filename = extractFilenameFromHeader(getResponseHeader);
 
     var networkManager = this._manager;
     if (networkManager.isStreamingRequest(fullRequestXhrId)) {
@@ -427,6 +431,10 @@ PDFNetworkStreamFullRequestReader.prototype = {
         total: data.lengthComputable ? data.total : this._contentLength,
       });
     }
+  },
+
+  get filename() {
+    return this._filename;
   },
 
   get isRangeSupported() {
