@@ -54,10 +54,14 @@ function formatL10nValue(text, args) {
 }
 
 /**
- * No-op implemetation of the localization service.
+ * No-op implementation of the localization service.
  * @implements {IL10n}
  */
 let NullL10n = {
+  getLanguage() {
+    return Promise.resolve('en-us');
+  },
+
   getDirection() {
     return Promise.resolve('ltr');
   },
@@ -270,6 +274,27 @@ function roundToDivide(x, div) {
 }
 
 /**
+ * Gets the size of the specified page, converted from PDF units to inches.
+ * @param {Object} An Object containing the properties: {Array} `view`,
+ *   {number} `userUnit`, and {number} `rotate`.
+ * @return {Object} An Object containing the properties: {number} `width`
+ *   and {number} `height`, given in inches.
+ */
+function getPageSizeInches({ view, userUnit, rotate, }) {
+  const [x1, y1, x2, y2] = view;
+  // We need to take the page rotation into account as well.
+  const changeOrientation = rotate % 180 !== 0;
+
+  const width = (x2 - x1) / 72 * userUnit;
+  const height = (y2 - y1) / 72 * userUnit;
+
+  return {
+    width: (changeOrientation ? height : width),
+    height: (changeOrientation ? width : height),
+  };
+}
+
+/**
  * Generic helper to find out what elements are visible within a scroll pane.
  */
 function getVisibleElements(scrollEl, views, sortByVisibility = false) {
@@ -418,6 +443,10 @@ function isValidRotation(angle) {
   return Number.isInteger(angle) && angle % 90 === 0;
 }
 
+function isPortraitOrientation(size) {
+  return size.width <= size.height;
+}
+
 function cloneObj(obj) {
   let result = Object.create(null);
   for (let i in obj) {
@@ -454,7 +483,7 @@ function waitOnEventOrTimeout({ target, name, delay = 0, }) {
   if (typeof target !== 'object' || !(name && typeof name === 'string') ||
       !(Number.isInteger(delay) && delay >= 0)) {
     return Promise.reject(
-      new Error('waitOnEventOrTimeout - invalid paramaters.'));
+      new Error('waitOnEventOrTimeout - invalid parameters.'));
   }
   let capability = createPromiseCapability();
 
@@ -621,6 +650,7 @@ export {
   SCROLLBAR_PADDING,
   VERTICAL_PADDING,
   isValidRotation,
+  isPortraitOrientation,
   isFileSchema,
   cloneObj,
   PresentationModeState,
@@ -634,6 +664,7 @@ export {
   parseQueryString,
   getVisibleElements,
   roundToDivide,
+  getPageSizeInches,
   approximateFraction,
   getOutputScale,
   scrollIntoView,
